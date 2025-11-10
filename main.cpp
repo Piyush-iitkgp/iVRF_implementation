@@ -1,12 +1,12 @@
 #include "ivrf.hpp"
 using namespace std;
 
-// parse a hex string (no 0x) into bytes; returns empty on invalid input
+// Converts hexadecimal string to byte vector
+// Supports both hex format (e.g., "68656c6c6f") and ASCII input
 static Bytes hex_to_bytes(const string &hex) {
     Bytes out;
     if (hex.empty()) return out;
     string s = hex;
-    // remove whitespace
     s.erase(remove_if(s.begin(), s.end(), ::isspace), s.end());
     if (s.size() % 2 != 0) return out;
     out.reserve(s.size() / 2);
@@ -20,28 +20,34 @@ static Bytes hex_to_bytes(const string &hex) {
     return out;
 }
 
+// Interactive demo for Authenticated MT-iVRF (Section 3.2 of paper)
+// Demonstrates key generation, VRF evaluation, and verification
 int main() {
-    cout << "Interactive MT-iVRF Demo (C++ version)\n";
-    cout << "====================================\n";
+    cout << "\n╔═══════════════════════════════════════╗\n";
+    cout << "║   Interactive MT-iVRF Demo (C++)    ║\n";
+    cout << "╚═══════════════════════════════════════╝\n";
 
-    // One-time parameter selection and key generation. User can choose to
-    // regenerate keys later from the menu.
+    // Parameter selection: N (time periods) and t (iterations)
     uint32_t N_override = 0, t_override = 0;
-    cout << "\nChoose parameters:\n";
-    cout << "1) Random N and t\n";
-    cout << "2) Enter N and t manually\n";
-    cout << "Select (1 or 2): ";
+    cout << "\n[Parameter Selection]\n";
+    cout << "  1) Random N and t\n";
+    cout << "  2) Manual N and t\n";
+    cout << "Choice: ";
     int choice = 1;
     if (!(cin >> choice)) return 0;
+    
     if (choice == 2) {
-        cout << "Enter N (power of two, e.g. 256): ";
+        cout << "N (power of 2): ";
         cin >> N_override;
-        cout << "Enter t (iteration count, e.g. 4): ";
+        cout << "t (iterations): ";
         cin >> t_override;
     }
-    string dummy; getline(cin, dummy); // consume newline
+    
+    string dummy;
+    getline(cin, dummy);
 
-    IVRF ivrf(0, N_override, t_override);
+    // Initialize iVRF instance and generate keys
+    IVRF ivrf(N_override, t_override);
     IVRF::PublicKey pk;
     IVRF::SecretKey sk;
 
@@ -50,17 +56,17 @@ int main() {
         return -1;
     }
 
-    cout << "\nParameters:\n";
-    cout << "N = " << ivrf.get_N() << "\n";
-    cout << "t = " << ivrf.get_t() << "\n";
+    cout << "\n[Active Parameters]\n";
+    cout << "  N = " << ivrf.get_N() << " (time periods)\n";
+    cout << "  t = " << ivrf.get_t() << " (iterations)\n";
+    cout << "  Message size: arbitrary (hash input)\n";
 
-    // Main interactive menu: evaluate with same keys, regenerate keys, or exit
     while (true) {
-        cout << "\nMenu:\n";
-        cout << "1) Evaluate (choose i/j, enter mu1/mu2 hex on single lines)\n";
-        cout << "2) Regenerate keys\n";
-        cout << "3) Exit\n";
-        cout << "Select (1-3): ";
+        cout << "\n[Main Menu]\n";
+        cout << "  1) Evaluate VRF\n";
+        cout << "  2) Regenerate keys\n";
+        cout << "  3) Exit\n";
+        cout << "Choice: ";
         int sel = 1;
         if (!(cin >> sel)) break;
         getline(cin, dummy);
@@ -69,51 +75,52 @@ int main() {
 
         if (sel == 2) {
             if (!ivrf.keygen(pk, sk)) {
-                cerr << "Key generation failed!\n";
+                cerr << "\nKey generation failed!\n";
                 break;
             }
-            cout << "Regenerated keys.\n";
             continue;
         }
 
-        // sel == 1: do an evaluation
-        cout << "Enter mu1 (hex, single line, e.g. 68656c6c6f): ";
-        string mu1hex; getline(cin, mu1hex);
-        cout << "Enter mu2 (hex, single line): ";
-        string mu2hex; getline(cin, mu2hex);
+        cout << "\n[Input Messages]";
+        cout << "\nμ₁ (hex or ASCII): ";
+        string mu1hex;
+        getline(cin, mu1hex);
+        cout << "μ₂ (hex or ASCII): ";
+        string mu2hex;
+        getline(cin, mu2hex);
         Bytes mu1 = hex_to_bytes(mu1hex);
         Bytes mu2 = hex_to_bytes(mu2hex);
-        // Accept either hex input or raw ASCII: if hex parser returned empty
-        // but the user provided a non-empty string, treat it as raw bytes.
+        
         if (mu1.empty() && !mu1hex.empty()) mu1 = Bytes(mu1hex.begin(), mu1hex.end());
         if (mu2.empty() && !mu2hex.empty()) mu2 = Bytes(mu2hex.begin(), mu2hex.end());
         if (mu1.empty() || mu2.empty()) {
-            cout << "Invalid input for mu1/mu2. Provide hex or ASCII. Try again.\n";
+            cout << "\nInvalid input. Provide hex or ASCII.\n";
             continue;
         }
 
+        // Get index (i, j) where i is time period and j is iteration
         uint32_t i = 0, j = 0;
-        cout << "Enter time period (0-" << ivrf.get_N()-1 << "): ";
+        cout << "Time period i (0-" << ivrf.get_N()-1 << "): ";
         if (!(cin >> i)) break;
-        cout << "Enter iteration (0-" << ivrf.get_t()-1 << "): ";
+        cout << "Iteration j (0-" << ivrf.get_t()-1 << "): ";
         if (!(cin >> j)) break;
         getline(cin, dummy);
 
-        Bytes v(IVRF::HASH_SIZE), sigma; IVRF::Proof pi;
+        // Evaluate VRF and generate proof
+        Bytes v(IVRF::HASH_SIZE), sigma;
+        IVRF::Proof pi;
+        
         if (!ivrf.eval(pk, sk, mu1, mu2, i, j, v, sigma, pi)) {
-            cout << "Evaluation failed!\n";
+            cout << "\n[ERROR] Evaluation failed\n";
             continue;
         }
 
+        // Verify the VRF output and proof
         if (!ivrf.verify(pk, mu1, mu2, i, j, v, sigma, pi)) {
-            cout << "Verification failed!\n";
-        } else {
-            cout << "Verification succeeded.\n";
+            cout << "\n[ERROR] Verification failed\n";
         }
-
-        // After evaluation, loop back to menu (keys are reused unless regenerated)
     }
 
-    cout << "Exiting demo.\n";
+    cout << "\nExiting...\n";
     return 0;
 }
