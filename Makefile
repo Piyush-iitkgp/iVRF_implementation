@@ -2,49 +2,50 @@
 #   iVRF Project Makefile
 # =========================
 
-# Compilers
 CXX = g++
 CC  = gcc
-
-# Flags
 CXXFLAGS = -O2 -Wall -I./falcon_local -march=native -maes
 CFLAGS   = -O2 -Wall -I./falcon_local -march=native -maes
-LDFLAGS  = -L/usr/lib/x86_64-linux-gnu
+LDFLAGS  = -L/usr/lib/x86_64-linux-gnu -lcrypto -lssl
 
-# Folders
-SRC_CPP = ivrf.cpp main.cpp
-# Exclude test/benchmark files with their own main() functions
-SRC_C   = $(filter-out falcon_local/ivrf.c falcon_local/speed.c falcon_local/test_falcon.c, $(wildcard falcon_local/*.c))
 BUILD_DIR = build
 
-# Object files (placed in build/)
-OBJ_CPP = $(patsubst %.cpp, $(BUILD_DIR)/%.o, $(SRC_CPP))
-OBJ_C   = $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRC_C))
-OBJ = $(OBJ_CPP) $(OBJ_C)
+# C++ sources
+CPP_OBJS = $(BUILD_DIR)/ivrf.o $(BUILD_DIR)/main.o
 
-# Output binary
-TARGET = $(BUILD_DIR)/ivrf_demo
+# C sources (Falcon + DRBG)
+C_OBJS = \
+	$(BUILD_DIR)/falcon_local/codec.o \
+	$(BUILD_DIR)/falcon_local/common.o \
+	$(BUILD_DIR)/falcon_local/drbg_rng.o \
+	$(BUILD_DIR)/falcon_local/falcon.o \
+	$(BUILD_DIR)/falcon_local/fft.o \
+	$(BUILD_DIR)/falcon_local/fpr.o \
+	$(BUILD_DIR)/falcon_local/keygen.o \
+	$(BUILD_DIR)/falcon_local/rng.o \
+	$(BUILD_DIR)/falcon_local/shake.o \
+	$(BUILD_DIR)/falcon_local/sign.o \
+	$(BUILD_DIR)/falcon_local/vrfy.o
 
-# =========================
-#         Rules
-# =========================
+TARGET = $(BUILD_DIR)/exec
+
 all: $(TARGET)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/falcon_local
 
-$(TARGET): $(BUILD_DIR) $(OBJ)
-	$(CXX) $(OBJ) -o $(TARGET) $(LDFLAGS) -lcrypto -lssl
+$(TARGET): $(BUILD_DIR) $(CPP_OBJS) $(C_OBJS)
+	$(CXX) $(CPP_OBJS) $(C_OBJS) -o $(TARGET) $(LDFLAGS)
 
-# Compile C++ sources
 $(BUILD_DIR)/%.o: %.cpp
 	mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Compile C sources
-$(BUILD_DIR)/%.o: %.c
+$(BUILD_DIR)/falcon_local/%.o: falcon_local/%.c
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+.PHONY: all clean

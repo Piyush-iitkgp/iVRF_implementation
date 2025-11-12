@@ -22,10 +22,9 @@ public:
     struct SecretKey {
         Bytes s;
         Bytes s_prime;
-        uint32_t current_period;
         std::vector<Bytes> sk_list;
         
-        SecretKey() : s(PRG_SEED_SIZE), s_prime(PRG_SEED_SIZE), current_period(0) {}
+        SecretKey() : s(PRG_SEED_SIZE), s_prime(PRG_SEED_SIZE) {}
     };
 
     struct Proof {
@@ -53,7 +52,6 @@ public:
 private:
     void hash(Bytes& out, const Bytes& in) const;
     void hash(Bytes& out, const uint8_t* in, size_t inlen) const;
-    void prg_next(Bytes& out, Bytes& state) const;
 
     void compute_merkle_root(Bytes& root, const vector<Bytes>& leaves) const;
 
@@ -62,3 +60,12 @@ private:
 };
 
 void print_bytes(const Bytes& data);
+
+// Utility function to concatenate two byte arrays
+inline Bytes concat_bytes(const Bytes& a, const Bytes& b) {
+    Bytes result;
+    result.reserve(a.size() + b.size());
+    result.insert(result.end(), a.begin(), a.end());
+    result.insert(result.end(), b.begin(), b.end());
+    return result;
+}

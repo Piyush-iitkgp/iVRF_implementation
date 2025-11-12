@@ -67,12 +67,6 @@ void IVRF::hash(Bytes& out, const uint8_t* in, size_t inlen) const {
     SHA256_Final(out.data(), &ctx);
 }
 
-// PRG G.Next: generates next pseudorandom value and updates state
-// Implements counter-mode PRG using hash function
-void IVRF::prg_next(Bytes& out, Bytes& state) const {
-    hash(out, state);
-    state = out;
-}
 
 // Computes Merkle tree root from N leaves using binary tree construction
 // Used in both keygen and verification phases
@@ -86,11 +80,10 @@ void IVRF::compute_merkle_root(Bytes& root, const vector<Bytes>& leaves) const {
     vector<Bytes> next_level;
         for (size_t i = 0; i < current_level.size(); i += 2) {
             Bytes combined;
-            combined.insert(combined.end(), current_level[i].begin(), current_level[i].end());
             if (i + 1 < current_level.size()) {
-                combined.insert(combined.end(), current_level[i + 1].begin(), current_level[i + 1].end());
+                combined = concat_bytes(current_level[i], current_level[i + 1]);
             } else {
-                combined.insert(combined.end(), current_level[i].begin(), current_level[i].end());
+                combined = concat_bytes(current_level[i], current_level[i]);
             }
             Bytes parent(IVRF::HASH_SIZE);
             hash(parent, combined);
@@ -118,8 +111,6 @@ bool IVRF::keygen(PublicKey& pk, SecretKey& sk) {
 
     RAND_bytes(random_seed, IVRF::PRG_SEED_SIZE);
     sk.s_prime = Bytes(random_seed, random_seed + IVRF::PRG_SEED_SIZE);
-
-    sk.current_period = 0;
 
     vector<Bytes> leaves;
 
@@ -169,9 +160,7 @@ bool IVRF::keygen(PublicKey& pk, SecretKey& sk) {
         sk.sk_list[idx] = sk_i;
 
         // Step 6: Compute Merkle tree leaf x_{i,t} = H(x_{i,t-1} || pk_i)
-        Bytes combined;
-        combined.insert(combined.end(), x_final.begin(), x_final.end());
-        combined.insert(combined.end(), pk_i.begin(), pk_i.end());
+        Bytes combined = concat_bytes(x_final, pk_i);
         Bytes leaf(IVRF::HASH_SIZE);
         hash(leaf, combined);
         pk.leaf_list[idx] = leaf;
@@ -220,9 +209,7 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
     pi.y = y;
 
     // Step 3: Compute VRF output v = H(y, μ₁)
-    Bytes input;
-    input.insert(input.end(), y.begin(), y.end());
-    input.insert(input.end(), mu1.begin(), mu1.end());
+    Bytes input = concat_bytes(y, mu1);
     v.resize(IVRF::HASH_SIZE);
     hash(v, input.data(), input.size());
     
@@ -265,9 +252,7 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
         tree[N + li] = pk.leaf_list[li];
     }
     for (int64_t k = (int64_t)N - 1; k >= 1; --k) {
-        Bytes combined;
-        combined.insert(combined.end(), tree[2 * k].begin(), tree[2 * k].end());
-        combined.insert(combined.end(), tree[2 * k + 1].begin(), tree[2 * k + 1].end());
+        Bytes combined = concat_bytes(tree[2 * k], tree[2 * k + 1]);
         hash(tree[(size_t)k], combined);
     }
 
@@ -311,20 +296,17 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
                          pi.auth_path.begin() + (level + 1) * IVRF::HASH_SIZE);
             Bytes combined;
             if (idx & 1) {
-                combined.insert(combined.end(), sibling.begin(), sibling.end());
-                combined.insert(combined.end(), cur.begin(), cur.end());
+                combined = concat_bytes(sibling, cur);
             } else {
-                combined.insert(combined.end(), cur.begin(), cur.end());
-                combined.insert(combined.end(), sibling.begin(), sibling.end());
+                combined = concat_bytes(cur, sibling);
             }
             hash(parent, combined);
             cur = parent;
             idx >>= 1;
         }
+        // Sanity check
         if (cur != pk.root) {
-            cout << "[DEBUG] Eval-side path does not reconstruct root" << endl;
-            cout << "[DEBUG] recomputed_root: "; print_bytes(cur);
-            cout << "[DEBUG] expected_root:   "; print_bytes(pk.root);
+            cerr << "Warning: Eval-side path does not reconstruct root" << endl;
         }
     }
     return true;
@@ -347,9 +329,7 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
     }
 
     // Step 2: Verify v = H(y, μ₁)
-    Bytes input;
-    input.insert(input.end(), pi.y.begin(), pi.y.end());
-    input.insert(input.end(), mu1.begin(), mu1.end());
+    Bytes input = concat_bytes(pi.y, mu1);
     
     Bytes computed_v(IVRF::HASH_SIZE);
     hash(computed_v, input.data(), input.size());
@@ -384,21 +364,11 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
     }
     
     // Compute leaf value x_{i,t} = H(x_{i,t-1} || pk_i)
-    Bytes leaf_combined;
-    leaf_combined.insert(leaf_combined.end(), current_node.begin(), current_node.end());
-    leaf_combined.insert(leaf_combined.end(), pi.pk_t.begin(), pi.pk_t.end());
+    Bytes leaf_combined = concat_bytes(current_node, pi.pk_t);
     Bytes leaf_hash(IVRF::HASH_SIZE);
     hash(leaf_hash, leaf_combined);
     current_node = leaf_hash;
-    {
-        // Debug: compare with stored leaf
-        Bytes stored_leaf = pk.leaf_list[i];
-        if (stored_leaf != current_node) {
-            cout << "[DEBUG] Leaf mismatch at i=" << i << "\n";
-            cout << "[DEBUG] computed_leaf: "; print_bytes(current_node);
-            cout << "[DEBUG] stored_leaf:   "; print_bytes(stored_leaf);
-        }
-    }
+    // Leaf verification is handled in the Merkle path verification
     
     // Compute Merkle root using authentication path
     Bytes computed_root(IVRF::HASH_SIZE);
@@ -411,11 +381,9 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
         
         Bytes combined;
         if (node_index & 1) {
-            combined.insert(combined.end(), sibling.begin(), sibling.end());
-            combined.insert(combined.end(), current_node.begin(), current_node.end());
+            combined = concat_bytes(sibling, current_node);
         } else {
-            combined.insert(combined.end(), current_node.begin(), current_node.end());
-            combined.insert(combined.end(), sibling.begin(), sibling.end());
+            combined = concat_bytes(current_node, sibling);
         }
         
         hash(computed_root, combined);
@@ -429,8 +397,6 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
         return true;
     } else {
         cerr << "Merkle path verification failed: root' ≠ pk_av" << endl;
-        cout << "[DEBUG] computed_root: "; print_bytes(computed_root);
-        cout << "[DEBUG] expected_root: "; print_bytes(pk.root);
         return false;
     }
 }
