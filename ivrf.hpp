@@ -10,7 +10,7 @@ using Bytes = vector<u8>;
 class IVRF {
 public:
     static constexpr size_t HASH_SIZE = 32;
-    static constexpr size_t PRG_SEED_SIZE = 32;
+    static constexpr size_t PRG_SEED_SIZE = 48;
 
     struct PublicKey {
         Bytes root;

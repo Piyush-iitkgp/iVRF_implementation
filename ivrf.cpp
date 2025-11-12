@@ -2,6 +2,9 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <falcon.h>
+extern "C" {
+#include "drbg_rng.h"
+}
 
 using namespace std;
 
@@ -109,18 +112,20 @@ bool IVRF::keygen(PublicKey& pk, SecretKey& sk) {
     cout << "\n=== iAV.Keygen(pp) ===" << endl;
     
     // Step 1: Generate PRG seeds s and s'
-    uint8_t random_seed[32];
-    RAND_bytes(random_seed, 32);
-    sk.s = Bytes(random_seed, random_seed + 32);
+    uint8_t random_seed[IVRF::PRG_SEED_SIZE];
+    RAND_bytes(random_seed, IVRF::PRG_SEED_SIZE);
+    sk.s = Bytes(random_seed, random_seed + IVRF::PRG_SEED_SIZE);
 
-    RAND_bytes(random_seed, 32);
-    sk.s_prime = Bytes(random_seed, random_seed + 32);
+    RAND_bytes(random_seed, IVRF::PRG_SEED_SIZE);
+    sk.s_prime = Bytes(random_seed, random_seed + IVRF::PRG_SEED_SIZE);
 
     sk.current_period = 0;
 
     vector<Bytes> leaves;
-    Bytes prg_state = sk.s;
-    Bytes prg_state_prime = sk.s_prime;
+
+    AES256_CTR_DRBG_struct s_ctx, sprime_ctx;
+    drbg_randombytes_init(&s_ctx, reinterpret_cast<unsigned char*>(sk.s.data()), NULL, 128);
+    drbg_randombytes_init(&sprime_ctx, reinterpret_cast<unsigned char*>(sk.s_prime.data()), NULL, 128);
 
     // Falcon-512 (NIST Level 1 post-quantum security)
     constexpr unsigned FLOGN = 9;
@@ -138,7 +143,7 @@ bool IVRF::keygen(PublicKey& pk, SecretKey& sk) {
     for (uint32_t idx = 0; idx < N; idx++) {
         // Derive x_{i,0} from seed s using PRG
         Bytes x_0(IVRF::HASH_SIZE);
-        prg_next(x_0, prg_state);
+        drbg_randombytes(&s_ctx, reinterpret_cast<unsigned char*>(x_0.data()), IVRF::HASH_SIZE);
 
         // Compute x_{i,t-1} = H^{t-1}(x_{i,0})
         Bytes x_final = x_0;
@@ -148,7 +153,7 @@ bool IVRF::keygen(PublicKey& pk, SecretKey& sk) {
 
         // Step 4-5: Derive r_i from s' and generate Falcon key pair
         Bytes r_i(IVRF::PRG_SEED_SIZE);
-        prg_next(r_i, prg_state_prime);
+        drbg_randombytes(&sprime_ctx, reinterpret_cast<unsigned char*>(r_i.data()), IVRF::PRG_SEED_SIZE);
 
         Bytes pk_i(pk_size);
         Bytes sk_i(sk_size);
@@ -199,13 +204,19 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
     }
 
     // Step 1: Derive x_{i,0} from seed s
-    Bytes prg_state = sk.s;
+    unsigned char seed_local[IVRF::PRG_SEED_SIZE];
+    memcpy(seed_local, sk.s.data(), IVRF::PRG_SEED_SIZE);
+    AES256_CTR_DRBG_struct s_in;
+    drbg_randombytes_init(&s_in, seed_local, NULL, 128);
     Bytes x(IVRF::HASH_SIZE);
-    for (uint32_t idx = 0; idx <= i; ++idx) prg_next(x, prg_state);
+    for (uint32_t idx = 0; idx <= i; ++idx) {
+        drbg_randombytes(&s_in, reinterpret_cast<unsigned char*>(x.data()), IVRF::HASH_SIZE);
+    }
 
     // Step 2: Compute y = H^{t-1-j}(x_{i,0})
     Bytes y = x;
-    for (uint32_t iter = 0; iter < j; ++iter) hash(y, y);
+    uint32_t pow_needed = (t > 0 && j < t) ? (t - 1 - j) : 0;
+    for (uint32_t iter = 0; iter < pow_needed; ++iter) hash(y, y);
     pi.y = y;
 
     // Step 3: Compute VRF output v = H(y, μ₁)
@@ -245,43 +256,27 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
     sigma.assign(sig_buf.begin(), sig_buf.begin() + sig_len);
     cout << "Signature σ on μ₂: " << sig_len << " bytes" << endl;
     
-    // Step 4: Compute Merkle authentication path AP_i
-    size_t tree_height = static_cast<size_t>(log2(N));
+    // Step 4: Compute Merkle authentication path AP_i using binary-heap tree
+    size_t tree_height = 0; for (uint32_t m = N; m > 1; m >>= 1) tree_height++;
     pi.auth_path.resize(tree_height * IVRF::HASH_SIZE);
 
-    vector<Bytes> leaves = pk.leaf_list;
-
-    // Rebuild tree to extract authentication path
-    vector<vector<Bytes>> tree_levels;
-    tree_levels.push_back(leaves);
-    for (size_t level = 0; level < tree_height; level++) {
-        const auto &prev = tree_levels.back();
-        vector<Bytes> next;
-        for (size_t k = 0; k < prev.size(); k += 2) {
-            Bytes combined;
-            combined.insert(combined.end(), prev[k].begin(), prev[k].end());
-            if (k + 1 < prev.size()) combined.insert(combined.end(), prev[k+1].begin(), prev[k+1].end());
-            else combined.insert(combined.end(), prev[k].begin(), prev[k].end());
-            Bytes parent(IVRF::HASH_SIZE);
-            hash(parent, combined);
-            next.push_back(parent);
-        }
-        tree_levels.push_back(next);
+    vector<Bytes> tree(2 * N, Bytes(IVRF::HASH_SIZE));
+    for (uint32_t li = 0; li < N; ++li) {
+        tree[N + li] = pk.leaf_list[li];
+    }
+    for (int64_t k = (int64_t)N - 1; k >= 1; --k) {
+        Bytes combined;
+        combined.insert(combined.end(), tree[2 * k].begin(), tree[2 * k].end());
+        combined.insert(combined.end(), tree[2 * k + 1].begin(), tree[2 * k + 1].end());
+        hash(tree[(size_t)k], combined);
     }
 
-    // Extract sibling nodes for authentication path
-    uint32_t node_index = i;
+    uint32_t cur = N + i;
     for (size_t level = 0; level < tree_height; level++) {
-        const auto &level_nodes = tree_levels[level];
-        size_t sibling = node_index ^ 1;
-        if (sibling < level_nodes.size()) {
-            copy(level_nodes[sibling].begin(), level_nodes[sibling].end(),
-                      pi.auth_path.begin() + level * IVRF::HASH_SIZE);
-        } else {
-            copy(level_nodes[node_index].begin(), level_nodes[node_index].end(),
-                      pi.auth_path.begin() + level * IVRF::HASH_SIZE);
-        }
-        node_index >>= 1;
+        uint32_t sibling = cur ^ 1;
+        copy(tree[sibling].begin(), tree[sibling].end(),
+                 pi.auth_path.begin() + level * IVRF::HASH_SIZE);
+        cur >>= 1;
     }
 
     if (i < pk.pk_list.size()) {
@@ -305,6 +300,33 @@ bool IVRF::eval(const PublicKey& pk, const SecretKey& sk, const Bytes& mu1,
     
     cout << "\nπ = (y, AP_" << i << ")" << endl;
     cout << "Evaluation complete" << endl;
+
+    // Sanity-check: recompute root from leaf and auth_path
+    {
+        Bytes cur = pk.leaf_list[i];
+        uint32_t idx = i;
+        Bytes parent(IVRF::HASH_SIZE);
+        for (size_t level = 0; level < tree_height; level++) {
+            Bytes sibling(pi.auth_path.begin() + level * IVRF::HASH_SIZE,
+                         pi.auth_path.begin() + (level + 1) * IVRF::HASH_SIZE);
+            Bytes combined;
+            if (idx & 1) {
+                combined.insert(combined.end(), sibling.begin(), sibling.end());
+                combined.insert(combined.end(), cur.begin(), cur.end());
+            } else {
+                combined.insert(combined.end(), cur.begin(), cur.end());
+                combined.insert(combined.end(), sibling.begin(), sibling.end());
+            }
+            hash(parent, combined);
+            cur = parent;
+            idx >>= 1;
+        }
+        if (cur != pk.root) {
+            cout << "[DEBUG] Eval-side path does not reconstruct root" << endl;
+            cout << "[DEBUG] recomputed_root: "; print_bytes(cur);
+            cout << "[DEBUG] expected_root:   "; print_bytes(pk.root);
+        }
+    }
     return true;
 }
 
@@ -352,9 +374,9 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
     }
     cout << "✓ Signature verified" << endl;
     
-    // Step 4: Compute x_{i,t} = H^{j+1}(y) and then leaf = H(x_{i,t-1} || pk_i)
+    // Step 4: Compute x_{i,t-1} = H^{j}(y) and then leaf = H(x_{i,t-1} || pk_i)
     Bytes current_node = pi.y;
-    uint32_t hash_times = (t - 1) - j;
+    uint32_t hash_times = j;
     for (uint32_t ht = 0; ht < hash_times; ht++) {
         Bytes tmp(IVRF::HASH_SIZE);
         hash(tmp, current_node);
@@ -368,12 +390,21 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
     Bytes leaf_hash(IVRF::HASH_SIZE);
     hash(leaf_hash, leaf_combined);
     current_node = leaf_hash;
+    {
+        // Debug: compare with stored leaf
+        Bytes stored_leaf = pk.leaf_list[i];
+        if (stored_leaf != current_node) {
+            cout << "[DEBUG] Leaf mismatch at i=" << i << "\n";
+            cout << "[DEBUG] computed_leaf: "; print_bytes(current_node);
+            cout << "[DEBUG] stored_leaf:   "; print_bytes(stored_leaf);
+        }
+    }
     
     // Compute Merkle root using authentication path
     Bytes computed_root(IVRF::HASH_SIZE);
     uint32_t node_index = i;
     
-    size_t tree_height = static_cast<size_t>(log2(N));
+    size_t tree_height = 0; for (uint32_t m = N; m > 1; m >>= 1) tree_height++;
     for (size_t level = 0; level < tree_height; level++) {
         Bytes sibling(pi.auth_path.begin() + level * IVRF::HASH_SIZE,
                       pi.auth_path.begin() + (level + 1) * IVRF::HASH_SIZE);
@@ -398,6 +429,8 @@ bool IVRF::verify(const PublicKey& pk, const Bytes& mu1,
         return true;
     } else {
         cerr << "Merkle path verification failed: root' ≠ pk_av" << endl;
+        cout << "[DEBUG] computed_root: "; print_bytes(computed_root);
+        cout << "[DEBUG] expected_root: "; print_bytes(pk.root);
         return false;
     }
 }
