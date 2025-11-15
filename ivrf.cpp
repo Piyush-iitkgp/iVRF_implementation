@@ -24,37 +24,31 @@ struct AlignedBuf {
     ~AlignedBuf() { if (ptr) free(ptr); }
 };
 
+// Generate N and t values
+
 IVRF::IVRF(uint32_t N_override, uint32_t t_override) {
-    if (N_override != 0 && (N_override & (N_override - 1)) == 0) {
+
+    // Choose N
+    if (N_override && ((N_override & (N_override - 1)) == 0)) {
         N = N_override;
     } else {
-        unsigned char buf[4];
-        if (RAND_bytes(buf, sizeof(buf)) <= 0) {
-            throw runtime_error("Failed to generate random bytes");
-        }
-        uint32_t rand_val = (static_cast<uint32_t>(buf[0]) << 24) |
-                            (static_cast<uint32_t>(buf[1]) << 16) |
-                            (static_cast<uint32_t>(buf[2]) << 8) |
-                            static_cast<uint32_t>(buf[3]);
-            int exp = 8 + (rand_val % 3); // 8..10 (256..1024)
+        uint32_t r;
+        RAND_bytes(reinterpret_cast<unsigned char*>(&r), sizeof(r));
+        int exp = 6 + (r % 5);     // 2^6 to 2^10
         N = 1u << exp;
     }
 
-    if (t_override != 0) {
+    // Choose t
+    if (t_override) {
         t = t_override;
     } else {
-        unsigned char buf2[4];
-        if (RAND_bytes(buf2, sizeof(buf2)) <= 0) {
-            throw runtime_error("Failed to generate random bytes");
-        }
-        uint32_t rand_val2 = (static_cast<uint32_t>(buf2[0]) << 24) |
-                             (static_cast<uint32_t>(buf2[1]) << 16) |
-                             (static_cast<uint32_t>(buf2[2]) << 8) |
-                             static_cast<uint32_t>(buf2[3]);
-        t = 2 + (rand_val2 % 7); // 2..8
+        uint32_t r;
+        RAND_bytes(reinterpret_cast<unsigned char*>(&r), sizeof(r));
+        t = 2 + (r % 7);          // 2 to 8
     }
 }
 
+// Overload hash function for Bytes input
 void IVRF::hash(Bytes& out, const Bytes& in) const {
     hash(out, in.data(), in.size());
 }

@@ -27,7 +27,7 @@ int main() {
     cout << "║   Interactive MT-iVRF Demo (C++)    ║\n";
     cout << "╚═══════════════════════════════════════╝\n";
 
-    // Parameter selection: N (time periods) and t (iterations)
+    // Parameter selection: N (Number of Rounds) and t (iterations)
     uint32_t N_override = 0, t_override = 0;
     cout << "\n[Parameter Selection]\n";
     cout << "  1) Random N and t\n";
@@ -57,7 +57,7 @@ int main() {
     }
 
     cout << "\n[Active Parameters]\n";
-    cout << "  N = " << ivrf.get_N() << " (time periods)\n";
+    cout << "  N = " << ivrf.get_N() << " (Number of Rounds)\n";
     cout << "  t = " << ivrf.get_t() << " (iterations)\n";
     cout << "  Message size: arbitrary (hash input)\n";
 
@@ -98,9 +98,9 @@ int main() {
             continue;
         }
 
-        // Get index (i, j) where i is time period and j is iteration
+        // Get index (i, j) where i is round number and j is iteration
         uint32_t i = 0, j = 0;
-        cout << "Time period i (0-" << ivrf.get_N()-1 << "): ";
+        cout << "Round i (0-" << ivrf.get_N()-1 << "): ";
         if (!(cin >> i)) break;
         cout << "Iteration j (0-" << ivrf.get_t()-1 << "): ";
         if (!(cin >> j)) break;
